@@ -316,7 +316,7 @@ select:focus { outline: none; border-color: var(--ink); }
 .lightbox-next { right: 24px; }
 
 /* SHARED SITE NAV */
-.site-nav { position: sticky; top: 0; z-index: 50; background: rgba(247,244,238,0.88); backdrop-filter: saturate(180%) blur(12px); border-bottom: 1px solid var(--line); }
+.site-nav{line-height:1.45;-webkit-font-smoothing:antialiased;position:sticky; top: 0; z-index: 50; background: rgba(247,244,238,0.88); backdrop-filter: saturate(180%) blur(12px); border-bottom: 1px solid var(--line); }
 .site-nav-inner { max-width: 1280px; margin: 0 auto; padding: 0 32px; height: 56px; display: flex; align-items: center; gap: 28px; }
 .site-nav-brand { display: flex; align-items: center; color: var(--ink); text-decoration: none; }
 .site-nav-brand svg { height: 18px; width: auto; display: block; }
@@ -940,9 +940,20 @@ function openModal(i) {
     </div>`;
   fetchMd(s.name);
   document.getElementById('modal').classList.add('open');
+  history.replaceState(null, '', '#' + s.name);
 }
 
-function closeModal() { document.getElementById('modal').classList.remove('open'); active = null; }
+function closeModal() {
+  document.getElementById('modal').classList.remove('open'); active = null;
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+}
+
+// Deep link: index.html#<skill-name> opens that skill's modal
+function openFromHash() {
+  const i = SKILLS.findIndex(s => s.name === decodeURIComponent(location.hash.slice(1)));
+  if (i >= 0) openModal(i);
+}
+window.addEventListener('hashchange', openFromHash);
 
 const REPO = "numeric-io/mcp-community";
 const RAW_BASE = `https://cdn.jsdelivr.net/gh/${REPO}@main/skills`;
@@ -1322,6 +1333,7 @@ function startFlipAuto() {
   }
   startFlipAuto();
   render();
+  openFromHash();
 })();
 </script>
 </body>
