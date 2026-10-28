@@ -17,6 +17,33 @@ Usage:
 import argparse
 import html as html_mod
 import json
+import os
+
+
+def _checked_path(raw):
+    """Reject malformed path input (null bytes, empty) before file I/O.
+
+    Run records / reports are read from and written to wherever the operator
+    points this tool (e.g. an auditor-facing archive directory) — not
+    sandboxed to one directory. This guard closes malformed-input edge cases
+    without restricting that by-design arbitrary-path access.
+    """
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return raw
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = os.path.realpath(_checked_path(raw))
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root first."
+        )
+    return resolved
+
 
 # Numeric brand palette (ported from the app)
 C = {
@@ -513,11 +540,20 @@ queue.</footer>"""
 def main():
     import sys
     ap = argparse.ArgumentParser(description="Render review.md and dashboard.html from a run record.")
+    ap.add_argument("--root", required=True,
+                    help="Workspace directory. --run-record, --out, and --html must all resolve "
+                    "under this directory.")
     ap.add_argument("--run-record", required=True)
-    ap.add_argument("--out", help="Markdown report output path "
-                    "(default: review-{run_id}.md — stamped so re-runs never silently overwrite)")
-    ap.add_argument("--html", help="HTML dashboard output path (default: dashboard-{run_id}.html)")
+    ap.add_argument("--out", help="Markdown report output path, resolved under --root unless an "
+                    "absolute path is given (default: review-{run_id}.md — stamped so re-runs "
+                    "never silently overwrite)")
+    ap.add_argument("--html", help="HTML dashboard output path, resolved under --root unless an "
+                    "absolute path is given (default: dashboard-{run_id}.html)")
     args = ap.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.run_record = _require_root(args.run_record, root)
 
     try:
         with open(args.run_record, "r", encoding="utf-8") as f:
@@ -529,8 +565,8 @@ def main():
         sys.exit(f"ERROR: {args.run_record} is not a run record produced by engine.py — pass the "
                  "run-record-<id>.json path printed in the engine summary.")
 
-    out_path = args.out or f"review-{rr['run_id']}.md"
-    html_path = args.html or f"dashboard-{rr['run_id']}.html"
+    out_path = _require_root(args.out or os.path.join(root, f"review-{rr['run_id']}.md"), root)
+    html_path = _require_root(args.html or os.path.join(root, f"dashboard-{rr['run_id']}.html"), root)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(render_md(rr))
     print(f"wrote {out_path}")

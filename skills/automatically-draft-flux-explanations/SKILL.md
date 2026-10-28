@@ -49,7 +49,7 @@ replace driver bullets with Opening → +/- activity by vendor/customer → Endi
 
 ## Performance
 
-Fan out per pending task, run `scripts/aggregate_txn_by_dimension.py` on the 6-month TSV inside each subagent, apply the materiality gate, and checkpoint per task. See `references/performance.md` for the full pattern.
+Fan out per pending task, run `scripts/aggregate_txn_by_dimension.py` on the 6-month TSV inside each subagent, apply the materiality gate, and checkpoint per task. See `references/performance.md` for the full pattern. The script requires `--root <work_dir>` and refuses any input/output path that resolves outside it — put the TSV and the output JSON in the same working directory and pass it as `--root`.
 
 ## Rules
 

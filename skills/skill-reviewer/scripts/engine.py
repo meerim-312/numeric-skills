@@ -575,7 +575,39 @@ def derive_review(model, overrides=None):
 
 # ---- CLI ----------------------------------------------------------------------
 
+def _checked_path(raw):
+    """Reject malformed path input (null bytes, empty) before file I/O.
+
+    This tool intentionally reads a submission/run-record located anywhere on
+    disk the operator points it at (reviewing a skill package elsewhere, or a
+    run record saved for audit purposes) — it is not sandboxed to one
+    directory. This guard closes malformed-input edge cases without
+    restricting that by-design arbitrary-path access.
+    """
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return raw
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace.
+
+    Reviewing a third-party skill means pointing at wherever it was downloaded — this
+    tool used to accept that literally. Containment means that's no longer true: stage
+    the skill (and findings/output files) inside --root first.
+    """
+    resolved = os.path.realpath(_checked_path(raw))
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root first."
+        )
+    return resolved
+
+
 def load_json(path):
+    """Caller must have already resolved `path` with _require_root before calling."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -592,7 +624,12 @@ JUNK_SUFFIXES = (".pyc", ".lock", ".zip", ".xlsx", ".png", ".jpg", ".jpeg", ".gi
 
 
 def expand_submission(paths):
-    """Expand directories into their reviewable files; skip junk."""
+    """Expand directories into their reviewable files; skip junk.
+
+    Caller must have already resolved each entry in `paths` with _require_root —
+    files yielded from a walked directory are re-validated by the caller afterward,
+    since only the directory itself was checked here.
+    """
     out = []
     for p in paths:
         if not os.path.isdir(p):
@@ -608,7 +645,10 @@ def expand_submission(paths):
 
 
 def skill_name_from_primary(path):
-    """Best-effort `name:` from the primary file's frontmatter, else basename."""
+    """Best-effort `name:` from the primary file's frontmatter, else basename.
+
+    Caller must have already resolved `path` with _require_root before calling.
+    """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             head = f.read(4000)
@@ -622,6 +662,10 @@ def skill_name_from_primary(path):
 
 def main():
     ap = argparse.ArgumentParser(description="Deterministic audit-readiness scoring engine.")
+    ap.add_argument("--root", required=True,
+                    help="Workspace directory. --submission, --primary, --findings/--findings-b, "
+                    "--out, --archive, and --registry must all resolve under this directory — "
+                    "stage any third-party skill being reviewed into --root first.")
     ap.add_argument("--findings", required=True, help="Model findings JSON (pass 1)")
     ap.add_argument("--findings-b", help="Second independent pass for consensus mode")
     ap.add_argument("--submission", nargs="+", required=True,
@@ -640,14 +684,22 @@ def main():
                     help="Reviewer's relation to the reviewed skill (self-attested; recorded "
                     "and rendered so an author-run review cannot pose as independent)")
     ap.add_argument("--archive", metavar="DIR", nargs="?", const="",
-                    help="Copy the submission corpus to DIR (default run-archive-{run_id}/) so "
-                    "quote tie-out can be re-performed later. Recommended for auditor-facing reviews.")
-    ap.add_argument("--registry", default="review-registry.jsonl",
-                    help="Append-only review registry (JSONL); every run appends one line so the "
-                    "population of reviewed skills is enumerable. Default: review-registry.jsonl in CWD.")
-    ap.add_argument("--out", help="Output run record path (default: run-record-{run_id}.json "
-                    "so re-runs never silently overwrite)")
+                    help="Copy the submission corpus to DIR under --root (default run-archive-{run_id}/) "
+                    "so quote tie-out can be re-performed later. Recommended for auditor-facing reviews.")
+    ap.add_argument("--registry", help="Append-only review registry (JSONL), resolved under --root "
+                    "unless an absolute path is given. Default: review-registry.jsonl in --root.")
+    ap.add_argument("--out", help="Output run record path, resolved under --root unless an absolute "
+                    "path is given (default: run-record-{run_id}.json so re-runs never silently overwrite)")
     args = ap.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+
+    args.findings = _require_root(args.findings, root)
+    if args.findings_b:
+        args.findings_b = _require_root(args.findings_b, root)
+    args.primary = _require_root(args.primary, root)
+    args.submission = [_require_root(p, root) for p in args.submission]
 
     # The primary file is always part of the evidence corpus — omitting it from
     # --submission was the most common way to get a misleading review. Directories
@@ -657,11 +709,11 @@ def main():
     engine_warnings = []
     submission, seen = [], set()
     for p in expand_submission(args.submission):
-        rp = os.path.realpath(p)
-        if rp not in seen:
-            seen.add(rp)
+        p = _require_root(p, root)
+        if p not in seen:
+            seen.add(p)
             submission.append(p)
-    if os.path.realpath(args.primary) not in seen:
+    if args.primary not in seen:
         submission.append(args.primary)
         engine_warnings.append(
             f"--primary {args.primary} was not in --submission — auto-included in the evidence corpus.")
@@ -676,7 +728,7 @@ def main():
             print(f"ERROR: cannot read submission file {path}: {e}", file=sys.stderr)
             sys.exit(2)
         corpus_parts.append(text)
-        manifest.append({"path": path, "realpath": os.path.realpath(path),
+        manifest.append({"path": path, "realpath": path,
                          "size": len(text), "hash": fnv1a(text)})
     # One normalized corpus PER FILE — quotes must tie out within a single file.
     norm_files = [normalize_for_match(t) for t in corpus_parts]
@@ -729,7 +781,7 @@ def main():
     timestamp = datetime.now(timezone.utc).isoformat()
     manifest_hash = fnv1a(json.dumps(manifest, separators=(",", ":")))
     run_id = fnv1a(manifest_hash + timestamp + str(passes))
-    out_path = args.out or f"run-record-{run_id}.json"
+    out_path = _require_root(args.out or os.path.join(root, f"run-record-{run_id}.json"), root)
     reviewer = args.reviewer or os.environ.get("USER") or ""
     run_record = {
         "run_id": run_id,
@@ -760,8 +812,9 @@ def main():
 
     # Archive the corpus so tie-out is re-performable after the originals move.
     if args.archive is not None:
-        archive_dir = args.archive or f"run-archive-{run_id}"
+        archive_dir = args.archive or os.path.join(root, f"run-archive-{run_id}")
         os.makedirs(archive_dir, exist_ok=True)
+        archive_dir = _require_root(archive_dir, root)
         import shutil
         for i, path in enumerate(submission):
             shutil.copy2(path, os.path.join(archive_dir, f"{i:02d}-{os.path.basename(path)}"))
@@ -782,7 +835,8 @@ def main():
         "overall": derived.get("overall"),
         "reviewer": reviewer, "run_record": out_path,
     }
-    with open(args.registry, "a", encoding="utf-8") as f:
+    registry_path = _require_root(args.registry or os.path.join(root, "review-registry.jsonl"), root)
+    with open(registry_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(registry_row, ensure_ascii=False) + "\n")
 
     # Console summary — enough to talk about the result without opening the file.

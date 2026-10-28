@@ -26,15 +26,17 @@ references/
 └── questions.md       — question bank mapping diagnostic questions to data sources
 ```
 
+**Every script requires `--root <work_dir>`** and refuses to read or write any path that doesn't resolve inside it — pick one `<work_dir>` at the start of the run, copy any harness-saved tool-result file into it before parsing, and pass the same `<work_dir>` as both the output location and `--root` on every call below.
+
 ---
 
 ## Step 0: Discover scope
 
 1. Call `list_workspaces`. If the user hasn't specified a workspace, show the list and ask.
 2. Call `set_workspace` with the chosen workspace ID.
-3. Call `get_workspace_context`. **The response will be large** (50K+ chars). It gets saved to a tool-result file. Parse it immediately with the bundled script:
+3. Call `get_workspace_context`. **The response will be large** (50K+ chars). It gets saved to a tool-result file. **If that file isn't already inside `<work_dir>`, copy it there first** — every script in this skill requires `--root <work_dir>` and refuses any input/output path that resolves outside it. Then parse immediately with the bundled script:
    ```bash
-   python3 <skill_path>/scripts/parse_context.py <context_result_file> <work_dir>
+   python3 <skill_path>/scripts/parse_context.py <context_result_file> <work_dir> --root <work_dir>
    ```
    This produces `user_map.json` (user ID → name mapping) and `periods.json` (all periods with dates and status).
 4. Ask which period to retrospect. Default: most recently closed period. If no closed periods, offer the current open period and note the retro will reflect progress-to-date.
@@ -47,10 +49,10 @@ Call `list_tasks` with:
 - `period_id`: chosen period
 - `include_description`: `false`
 
-The response is TSV and will be large for real workspaces. Parse immediately:
+The response is TSV and will be large for real workspaces. Copy the tool-result file into `<work_dir>` if it isn't already there, then parse immediately:
 
 ```bash
-python3 <skill_path>/scripts/parse_tasks.py <tasks_result_file> <work_dir>
+python3 <skill_path>/scripts/parse_tasks.py <tasks_result_file> <work_dir> --root <work_dir>
 ```
 
 The script parses all tasks in the period by default. An optional third argument can cap the count if needed (e.g. `500`), but the default is to process everything.
@@ -65,10 +67,10 @@ Events power the efficiency metrics (turnaround, reopens, first-touch, etc.). Th
 
 **Batching strategy:** Group task `key_id` values from the parsed task list. Call `get_task_events` with `task_keys` set to ~15 keys per batch. Run 4–6 batches (covering 60–90 tasks) — this provides enough signal for the metrics without taking too long.
 
-Each batch response gets saved to a tool-result file. After all batches complete, merge and parse:
+Each batch response gets saved to a tool-result file — copy each batch file into `<work_dir>` if it isn't already there. After all batches complete, merge and parse:
 
 ```bash
-python3 <skill_path>/scripts/parse_events.py <work_dir>/user_map.json <work_dir> <batch1.txt> <batch2.txt> ...
+python3 <skill_path>/scripts/parse_events.py <work_dir>/user_map.json <work_dir> <batch1.txt> <batch2.txt> ... --root <work_dir>
 ```
 
 This resolves user IDs to names (using the user_map from Step 0) and outputs a single `events.json` sorted by timestamp.
@@ -80,7 +82,7 @@ This resolves user IDs to names (using the user_map from Step 0) and outputs a s
 ## Step 3: Compute metrics
 
 ```bash
-python3 <skill_path>/scripts/compute_metrics.py <work_dir>/tasks.json <work_dir>/events.json <period_start_date> <work_dir>
+python3 <skill_path>/scripts/compute_metrics.py <work_dir>/tasks.json <work_dir>/events.json <period_start_date> <work_dir> --root <work_dir>
 ```
 
 This computes all efficiency metrics and saves `metrics.json`. The metrics include:
@@ -99,7 +101,7 @@ This computes all efficiency metrics and saves `metrics.json`. The metrics inclu
 ## Step 4: Generate the digest
 
 ```bash
-python3 <skill_path>/scripts/generate_digest.py <work_dir>/metrics.json "<workspace_name>" "<period_name>" <output_dir>
+python3 <skill_path>/scripts/generate_digest.py <work_dir>/metrics.json "<workspace_name>" "<period_name>" <output_dir> --root <work_dir>
 ```
 
 This produces `digest.md` — a Slack-formatted summary organized around questions:

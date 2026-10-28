@@ -14,10 +14,31 @@ Usage:
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+
+def _safe_path(raw):
+    """Canonicalize a CLI-supplied path before file I/O; reject malformed input."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return os.path.realpath(raw)
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = _safe_path(raw)
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root (the "
+            f"skill's working directory) first."
+        )
+    return resolved
 
 
 def to_float(s):
@@ -51,6 +72,8 @@ def month_of(date_str):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--root", required=True,
+                   help="Working directory. input and output must resolve under this directory.")
     p.add_argument("input", help="Transaction lines TSV")
     p.add_argument("output", help="Output JSON")
     p.add_argument("--amount-col", default="normal_amount",
@@ -58,6 +81,11 @@ def main():
     p.add_argument("--top-n", type=int, default=20,
                    help="Top N entries to keep per dimension (rest grouped as 'Other')")
     args = p.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.input = _require_root(args.input, root)
+    args.output = _require_root(args.output, root)
 
     in_path = Path(args.input)
     if not in_path.exists():

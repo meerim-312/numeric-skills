@@ -20,20 +20,45 @@ clearance section. No dependencies.
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 
 RESOLUTIONS = ("confirmed", "overturned", "still-open")
 
 
+def _checked_path(raw):
+    """Reject malformed path input (null bytes, empty) before file I/O."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return raw
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = os.path.realpath(_checked_path(raw))
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root first."
+        )
+    return resolved
+
+
 def main():
     ap = argparse.ArgumentParser(description="Record verification-queue clearance on a run record.")
+    ap.add_argument("--root", required=True, help="Workspace directory. --run-record must resolve under this directory.")
     ap.add_argument("--run-record", required=True)
     ap.add_argument("--resolver", required=True, help='Who resolved these items, e.g. "Name <email>"')
     ap.add_argument("--item", nargs=3, action="append", required=True,
                     metavar=("ID", "RESOLUTION", "BASIS"),
                     help=f"Control id, one of {'|'.join(RESOLUTIONS)}, and a one-line basis. Repeatable.")
     args = ap.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.run_record = _require_root(args.run_record, root)
 
     try:
         with open(args.run_record, "r", encoding="utf-8") as f:

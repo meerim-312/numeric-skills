@@ -6,13 +6,39 @@ Input: path to raw MCP tool-result file (JSON array [{type, text}])
 Output: saves to output_dir/tasks.json with:
   - total_tasks, by_status, by_task_type, assignees, due_date_coverage, tasks[]
 
-Usage: python3 parse_tasks.py <input_file> <output_dir> [max_tasks]
+Usage: python3 parse_tasks.py <input_file> <output_dir> [max_tasks] --root <work_dir>
+
+<input_file> and <output_dir> must both resolve under --root — if <input_file> is a
+harness-saved tool-result file outside the working directory, copy it into <work_dir>
+first.
 """
+import argparse
 import json, sys, os, csv
 from io import StringIO
 
 
+def _safe_path(raw):
+    """Canonicalize a CLI-supplied path before file I/O; reject malformed input."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return os.path.realpath(raw)
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = _safe_path(raw)
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root (the "
+            f"skill's working directory) first."
+        )
+    return resolved
+
+
 def parse(input_file, output_dir, max_tasks=None):
+    """Caller must have already resolved input_file/output_dir with _require_root."""
     with open(input_file) as f:
         raw = json.load(f)
     text = raw[0]["text"]
@@ -109,5 +135,18 @@ def parse(input_file, output_dir, max_tasks=None):
 
 
 if __name__ == "__main__":
-    max_t = int(sys.argv[3]) if len(sys.argv) > 3 else None
-    parse(sys.argv[1], sys.argv[2], max_t)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("input_file")
+    ap.add_argument("output_dir")
+    ap.add_argument("max_tasks", nargs="?", default=None)
+    ap.add_argument("--root", required=True,
+                     help="Working directory. input_file and output_dir must resolve under this directory.")
+    args = ap.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.input_file = _require_root(args.input_file, root)
+    args.output_dir = _require_root(args.output_dir, root)
+
+    max_t = int(args.max_tasks) if args.max_tasks is not None else None
+    parse(args.input_file, args.output_dir, max_t)

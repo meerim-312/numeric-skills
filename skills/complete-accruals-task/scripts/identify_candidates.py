@@ -30,6 +30,27 @@ Output JSON structure:
 
 import json
 import argparse
+import os
+
+
+def _safe_path(raw):
+    """Canonicalize a CLI-supplied path before file I/O; reject malformed input."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return os.path.realpath(raw)
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = _safe_path(raw)
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root (the "
+            f"skill's working directory) first."
+        )
+    return resolved
 
 
 def _month_label(ym: str) -> str:
@@ -177,11 +198,18 @@ def build_markdown_table(candidates: list, observations: list, completed_months:
 
 def main():
     parser = argparse.ArgumentParser(description="Identify accrual candidates from vendor spend matrix")
+    parser.add_argument("--root", required=True,
+                         help="Working directory. spend_matrix and output_json must resolve under this directory.")
     parser.add_argument("spend_matrix", help="Path to vendor_spend_matrix.json")
     parser.add_argument("output_json", help="Path for output candidates JSON")
     parser.add_argument("--open-period", required=True, help="Open period YYYY-MM")
     parser.add_argument("--exclusions", help="Comma-separated vendor names to exclude", default="")
     args = parser.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.spend_matrix = _require_root(args.spend_matrix, root)
+    args.output_json = _require_root(args.output_json, root)
 
     with open(args.spend_matrix) as f:
         data = json.load(f)

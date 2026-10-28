@@ -14,6 +14,7 @@ Exits 0 on success, 1 with FAIL lines on any mismatch. No dependencies.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,7 +55,7 @@ def run_engine(findings_obj, tmp, name, submission=None, extra=None, findings_b=
     fpath = os.path.join(tmp, f"{name}.json")
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(findings_obj, f)
-    cmd = [sys.executable, ENGINE, "--findings", fpath,
+    cmd = [sys.executable, ENGINE, "--root", tmp, "--findings", fpath,
            "--submission", *(submission or [EXAMPLE]), "--primary", EXAMPLE,
            "--out", os.path.join(tmp, f"rr-{name}.json"), "--reviewer", "Check Golden"]
     if findings_b is not None:
@@ -72,7 +73,20 @@ def run_engine(findings_obj, tmp, name, submission=None, extra=None, findings_b=
 
 
 def main():
+    global EXAMPLE, EXAMPLES, RUBRIC
     tmp = tempfile.mkdtemp(prefix="check-golden-")
+
+    # engine.py now requires --root containment: --submission/--primary must resolve
+    # under --root. Stage the repo's own fixture files into tmp (the root for this
+    # whole run) instead of pointing at them in place.
+    examples_staged = os.path.join(tmp, "examples")
+    shutil.copytree(EXAMPLES, examples_staged)
+    EXAMPLE = os.path.join(examples_staged, os.path.basename(EXAMPLE))
+    RUBRIC_staged = os.path.join(tmp, os.path.basename(RUBRIC))
+    shutil.copy2(RUBRIC, RUBRIC_staged)
+    RUBRIC = RUBRIC_staged
+    EXAMPLES = examples_staged
+
     norm = engine.normalize_for_match
 
     # 1. Golden happy path — including unqualified display verdict.
@@ -186,12 +200,12 @@ def main():
     check("registry fields", all(r.get("run_id") and r.get("skill_name") for r in rows), True)
 
     # 14. Queue clearance + report rendering.
-    rc3 = subprocess.run([sys.executable, CLEAR, "--run-record", os.path.join(tmp, "rr-g3.json"),
+    rc3 = subprocess.run([sys.executable, CLEAR, "--root", tmp, "--run-record", os.path.join(tmp, "rr-g3.json"),
                           "--resolver", "Check Golden",
                           "--item", "E2", "confirmed", "verified by inspection"],
                          capture_output=True, text=True, cwd=tmp)
     check("clear_queue rc", rc3.returncode, 0)
-    rep = subprocess.run([sys.executable, REPORT, "--run-record", os.path.join(tmp, "rr-g3.json")],
+    rep = subprocess.run([sys.executable, REPORT, "--root", tmp, "--run-record", os.path.join(tmp, "rr-g3.json")],
                          capture_output=True, text=True, cwd=tmp)
     check("report rc", rep.returncode, 0)
     with open(os.path.join(tmp, f"review-{rr3['run_id']}.json".replace(".json", ".md")), encoding="utf-8") as f:

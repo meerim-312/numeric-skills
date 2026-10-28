@@ -162,10 +162,10 @@ Issue a **single** `query_transaction_lines` call covering the full 7-month wind
 
 This gives 6 completed months of history plus the open period for current spend. Do not make two separate API calls.
 
-**If the result is too large for context** (saved to a tool-results file), use the bundled script to parse it:
+**If the result is too large for context** (saved to a tool-results file), copy that file into `<working_dir>` if it isn't already there — every bundled script requires `--root <working_dir>` and refuses any path outside it — then parse it:
 
 ```bash
-python3 <skill_path>/scripts/parse_txn_lines.py <tool_results_file> <working_dir>/vendor_spend_matrix.json --entity-org-id <org_id>
+python3 <skill_path>/scripts/parse_txn_lines.py <tool_results_file> <working_dir>/vendor_spend_matrix.json --entity-org-id <org_id> --root <working_dir>
 ```
 
 The script handles the JSON-wrapped TSV format, filters by entity, groups by counterparty × posting month, and outputs a clean JSON matrix. The script can also be used when the result fits in context — it is faster than inline parsing and avoids re-deriving the column names and date parsing logic.
@@ -193,7 +193,8 @@ Use the bundled script to identify accrual candidates:
 python3 <skill_path>/scripts/identify_candidates.py \
     <working_dir>/vendor_spend_matrix.json \
     <working_dir>/accrual_candidates.json \
-    --open-period <YYYY-MM>
+    --open-period <YYYY-MM> \
+    --root <working_dir>
 ```
 
 If prior-period preferences included vendor exclusions, pass them as a comma-separated list:
@@ -256,7 +257,7 @@ Once the user confirms which vendors to accrue for, prepare two JSON files:
 ]
 ```
 
-Then run the bundled output generator:
+Then run the bundled output generator. `<output_dir>` must resolve inside `<working_dir>` (use `<working_dir>` itself, or a subdirectory of it) — the script requires `--root <working_dir>` and refuses any input/output path outside it:
 
 ```bash
 python3 <skill_path>/scripts/generate_outputs.py \
@@ -270,7 +271,8 @@ python3 <skill_path>/scripts/generate_outputs.py \
     --expense-acct-name "<full name>" \
     --accrued-exp-acct-code <code> \
     --entity-id <id> \
-    --excluded-vendors <working_dir>/excluded_vendors.json
+    --excluded-vendors <working_dir>/excluded_vendors.json \
+    --root <working_dir>
 ```
 
 This single command produces all three output files:

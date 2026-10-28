@@ -35,7 +35,34 @@ import json
 import csv
 import argparse
 import os
+import re
 import sys
+
+
+def _safe_path(raw):
+    """Canonicalize a CLI-supplied path before file I/O; reject malformed input."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return os.path.realpath(raw)
+
+
+def _sanitize_component(s):
+    """Strip path separators/traversal sequences from a filename component built from account/period data."""
+    return re.sub(r"[\\/]|\.\.", "_", str(s))
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = _safe_path(raw)
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root (the "
+            f"skill's working directory) first."
+        )
+    return resolved
+
 
 try:
     from openpyxl import Workbook
@@ -220,7 +247,10 @@ def build_validation(
     period_slug: str,
     output_path: str,
 ):
-    """Build the validation text file."""
+    """Build the validation text file.
+
+    Caller must pass an output_path already confined to the resolved --root/output-dir.
+    """
     lines = [
         f"{acct_name.upper()} ACCRUAL VALIDATION — {period_slug.title()}",
         "=" * 60,
@@ -261,6 +291,9 @@ def build_validation(
 
 def main():
     parser = argparse.ArgumentParser(description="Generate accrual workpaper, JE CSV, and validation")
+    parser.add_argument("--root", required=True,
+                         help="Working directory. --spend-matrix, --confirmed-vendors, "
+                         "--excluded-vendors, and --output-dir must all resolve under this directory.")
     parser.add_argument("--spend-matrix", required=True, help="Path to vendor_spend_matrix.json")
     parser.add_argument("--confirmed-vendors", required=True, help="Path to confirmed_vendors.json")
     parser.add_argument("--output-dir", required=True, help="Output directory")
@@ -274,6 +307,14 @@ def main():
     parser.add_argument("--excluded-vendors", default=None, help="Path to excluded_vendors.json (optional)")
     args = parser.parse_args()
 
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.spend_matrix = _require_root(args.spend_matrix, root)
+    args.confirmed_vendors = _require_root(args.confirmed_vendors, root)
+    args.output_dir = _require_root(args.output_dir, root)
+    if args.excluded_vendors:
+        args.excluded_vendors = _require_root(args.excluded_vendors, root)
+
     with open(args.spend_matrix) as f:
         matrix = json.load(f)
     with open(args.confirmed_vendors) as f:
@@ -285,13 +326,17 @@ def main():
             excluded = json.load(f)
 
     completed_months = [m for m in matrix["months"] if m < args.open_period]
-    slug = args.expense_acct_name.split(":")[-1].strip().lower().replace(" ", "_")
+    # expense_acct_name/period_slug come from Numeric account/task data, not a
+    # literal CLI path — sanitize before they become part of a filename below.
+    slug = _sanitize_component(args.expense_acct_name.split(":")[-1].strip().lower().replace(" ", "_"))
+    safe_period_slug = _sanitize_component(args.period_slug)
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
 
-    wp_path = os.path.join(args.output_dir, f"{slug}_accrual_workpaper_{args.period_slug}.xlsx")
-    je_path = os.path.join(args.output_dir, f"{slug}_journal_entries_{args.period_slug}.csv")
-    val_path = os.path.join(args.output_dir, f"{slug}_accrual_validation_{args.period_slug}.txt")
+    wp_path = os.path.join(output_dir, f"{slug}_accrual_workpaper_{safe_period_slug}.xlsx")
+    je_path = os.path.join(output_dir, f"{slug}_journal_entries_{safe_period_slug}.csv")
+    val_path = os.path.join(output_dir, f"{slug}_accrual_validation_{safe_period_slug}.txt")
 
     # Build workpaper
     build_workpaper(

@@ -17,13 +17,37 @@ Output: JSON file with structure:
 """
 
 import json
+import os
 import sys
 import argparse
 from collections import defaultdict
 
 
+def _safe_path(raw):
+    """Canonicalize a CLI-supplied path before file I/O; reject malformed input."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return os.path.realpath(raw)
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = _safe_path(raw)
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root (the "
+            f"skill's working directory) first."
+        )
+    return resolved
+
+
 def parse_tsv_from_tool_result(file_path: str) -> list[dict]:
-    """Read the JSON-wrapped TSV from a Numeric MCP tool result file."""
+    """Read the JSON-wrapped TSV from a Numeric MCP tool result file.
+
+    Caller must have already resolved `file_path` with _require_root before calling.
+    """
     with open(file_path, "r") as f:
         raw = json.load(f)
 
@@ -110,10 +134,17 @@ def build_spend_matrix(
 
 def main():
     parser = argparse.ArgumentParser(description="Parse Numeric transaction lines into vendor spend matrix")
+    parser.add_argument("--root", required=True,
+                         help="Working directory. txn_file and output_file must resolve under this directory.")
     parser.add_argument("txn_file", help="Path to the raw tool-results JSON file")
     parser.add_argument("output_file", help="Path for output JSON")
     parser.add_argument("--entity-org-id", help="Filter to this organization_id", default=None)
     args = parser.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.txn_file = _require_root(args.txn_file, root)
+    args.output_file = _require_root(args.output_file, root)
 
     rows = parse_tsv_from_tool_result(args.txn_file)
     matrix = build_spend_matrix(rows, args.entity_org_id)

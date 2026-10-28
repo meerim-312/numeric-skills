@@ -4,12 +4,35 @@ Compute all close retro metrics from parsed tasks and events.
 Input: tasks.json, events.json, period start date (YYYY-MM-DD)
 Output: saves metrics.json to output_dir
 
-Usage: python3 compute_metrics.py <tasks.json> <events.json> <period_start> <output_dir>
+Usage: python3 compute_metrics.py <tasks.json> <events.json> <period_start> <output_dir> --root <work_dir>
+
+tasks.json, events.json, and output_dir must all resolve under --root.
 """
+import argparse
 import json, sys, os
 from datetime import datetime, timezone
 from collections import defaultdict
 import statistics
+
+
+def _safe_path(raw):
+    """Canonicalize a CLI-supplied path before file I/O; reject malformed input."""
+    if not raw or "\x00" in str(raw):
+        raise SystemExit(f"Refusing invalid path: {raw!r}")
+    return os.path.realpath(raw)
+
+
+def _require_root(raw, root):
+    """Resolve a path and hard-require it to stay within the declared --root workspace."""
+    resolved = _safe_path(raw)
+    root_resolved = os.path.realpath(root)
+    if os.path.commonpath([resolved, root_resolved]) != root_resolved:
+        raise SystemExit(
+            f"Refusing path outside --root: {raw!r} resolves to {resolved!r}, which is "
+            f"not inside --root {root_resolved!r}. Copy/stage it into --root (the "
+            f"skill's working directory) first."
+        )
+    return resolved
 
 
 def days_between(iso_a, iso_b):
@@ -39,6 +62,7 @@ def p90_safe(lst):
 
 
 def compute(tasks_file, events_file, period_start, output_dir):
+    """Caller must have already resolved tasks_file/events_file/output_dir with _require_root."""
     with open(tasks_file) as f:
         td = json.load(f)
     with open(events_file) as f:
@@ -416,4 +440,20 @@ def compute(tasks_file, events_file, period_start, output_dir):
 
 
 if __name__ == "__main__":
-    compute(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("tasks_file")
+    ap.add_argument("events_file")
+    ap.add_argument("period_start")
+    ap.add_argument("output_dir")
+    ap.add_argument("--root", required=True,
+                     help="Working directory. tasks_file, events_file, and output_dir must "
+                     "resolve under this directory.")
+    args = ap.parse_args()
+
+    root = os.path.realpath(args.root)
+    os.makedirs(root, exist_ok=True)
+    args.tasks_file = _require_root(args.tasks_file, root)
+    args.events_file = _require_root(args.events_file, root)
+    args.output_dir = _require_root(args.output_dir, root)
+
+    compute(args.tasks_file, args.events_file, args.period_start, args.output_dir)
